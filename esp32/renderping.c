@@ -6,7 +6,7 @@ BluetoothSerial SerialBT;
 
 // ================== CONFIG (CHANGE THESE) ==================
 const char* WIFI_SSID = "JatinSharma4G";
-const char* WIFI_PASS = "123456654321";
+const char* WIFI_PASS = "123456654321"; // change password its wrong credentials
 
 const char* HOST = "vertex-vault.onrender.com"; // hostname only (no https://, no port)
 const uint16_t PORT = 443;

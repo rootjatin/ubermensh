@@ -5,9 +5,8 @@
 
 BluetoothSerial SerialBT;
 
-// ====== CHANGE THESE ======
 const char* WIFI_SSID = "JatinSharma4G";
-const char* WIFI_PASS = "123456654321";
+const char* WIFI_PASS = "123456654321"; // change password its wrong credentials
 
 // HOST must be ONLY IP/hostname (NO port)
 const char* HOST = "192.168.29.220";

@@ -11,16 +11,35 @@
 #define INVERT_X true
 #define INVERT_Y false
 
+// Smoothness settings
+#define CURSOR_MIN_X 1
+#define CURSOR_MAX_X 126
+#define CURSOR_MIN_Y 10
+#define CURSOR_MAX_Y 62
+
+#define REFRESH_MS 12        // ~83 FPS max redraw
+#define SMOOTHING 0.35f      // 0.1 = softer, 1.0 = instant
+#define MOUSE_SCALE 1.0f     // increase if cursor feels slow
+
 USB Usb;
 HIDBoot<USB_HID_PROTOCOL_MOUSE> HidMouse(&Usb);
 
+// current displayed position
+float cursorXF = OLED_W / 2.0f;
+float cursorYF = OLED_H / 2.0f;
+
+// target position
+float targetXF = OLED_W / 2.0f;
+float targetYF = OLED_H / 2.0f;
+
 int cursorX = OLED_W / 2;
 int cursorY = OLED_H / 2;
-bool needRedraw = true;
 
 bool leftPressed = false;
 bool middlePressed = false;
 bool rightPressed = false;
+
+unsigned long lastRedraw = 0;
 
 // ---------------- OLED ----------------
 
@@ -115,22 +134,17 @@ void drawCursor(int x, int y) {
 }
 
 void drawButtonIndicators() {
-  // Page 0 only
-  // Small 4-column blocks
   uint8_t onPattern = 0b00111100;
   uint8_t offPattern = 0b00000000;
 
-  // Left block at x = 2..5
   for (uint8_t x = 2; x <= 5; x++) {
     oledWriteByte(x, 0, leftPressed ? onPattern : offPattern);
   }
 
-  // Middle block at x = 10..13
   for (uint8_t x = 10; x <= 13; x++) {
     oledWriteByte(x, 0, middlePressed ? onPattern : offPattern);
   }
 
-  // Right block at x = 18..21
   for (uint8_t x = 18; x <= 21; x++) {
     oledWriteByte(x, 0, rightPressed ? onPattern : offPattern);
   }
@@ -153,17 +167,15 @@ protected:
     if (INVERT_X) dx = -dx;
     if (INVERT_Y) dy = -dy;
 
-    cursorX += dx;
-    cursorY -= dy;
+    // Apply both axes together to preserve diagonal movement
+    targetXF += dx * MOUSE_SCALE;
+    targetYF -= dy * MOUSE_SCALE;
 
-    if (cursorX < 1) cursorX = 1;
-    if (cursorX > 126) cursorX = 126;
-
-    // Keep cursor below click indicator row
-    if (cursorY < 10) cursorY = 10;
-    if (cursorY > 62) cursorY = 62;
-
-    needRedraw = true;
+    // Clamp target area
+    if (targetXF < CURSOR_MIN_X) targetXF = CURSOR_MIN_X;
+    if (targetXF > CURSOR_MAX_X) targetXF = CURSOR_MAX_X;
+    if (targetYF < CURSOR_MIN_Y) targetYF = CURSOR_MIN_Y;
+    if (targetYF > CURSOR_MAX_Y) targetYF = CURSOR_MAX_Y;
 
     Serial.print("MOVE dx=");
     Serial.print(dx);
@@ -173,37 +185,31 @@ protected:
 
   void OnLeftButtonDown(MOUSEINFO *mi) override {
     leftPressed = true;
-    needRedraw = true;
     Serial.println("LEFT DOWN");
   }
 
   void OnLeftButtonUp(MOUSEINFO *mi) override {
     leftPressed = false;
-    needRedraw = true;
     Serial.println("LEFT UP");
   }
 
   void OnRightButtonDown(MOUSEINFO *mi) override {
     rightPressed = true;
-    needRedraw = true;
     Serial.println("RIGHT DOWN");
   }
 
   void OnRightButtonUp(MOUSEINFO *mi) override {
     rightPressed = false;
-    needRedraw = true;
     Serial.println("RIGHT UP");
   }
 
   void OnMiddleButtonDown(MOUSEINFO *mi) override {
     middlePressed = true;
-    needRedraw = true;
     Serial.println("MIDDLE DOWN");
   }
 
   void OnMiddleButtonUp(MOUSEINFO *mi) override {
     middlePressed = false;
-    needRedraw = true;
     Serial.println("MIDDLE UP");
   }
 };
@@ -215,6 +221,7 @@ void setup() {
   delay(500);
 
   Wire.begin();
+  Wire.setClock(400000);   // faster I2C for smoother OLED update
   delay(100);
 
   oledInit();
@@ -237,8 +244,31 @@ void setup() {
 void loop() {
   Usb.Task();
 
-  if (needRedraw) {
-    needRedraw = false;
-    redrawScreen();
+  unsigned long now = millis();
+  if (now - lastRedraw >= REFRESH_MS) {
+    lastRedraw = now;
+
+    // Smooth easing towards target
+    cursorXF += (targetXF - cursorXF) * SMOOTHING;
+    cursorYF += (targetYF - cursorYF) * SMOOTHING;
+
+    int newX = (int)(cursorXF + 0.5f);
+    int newY = (int)(cursorYF + 0.5f);
+
+    if (newX < CURSOR_MIN_X) newX = CURSOR_MIN_X;
+    if (newX > CURSOR_MAX_X) newX = CURSOR_MAX_X;
+    if (newY < CURSOR_MIN_Y) newY = CURSOR_MIN_Y;
+    if (newY > CURSOR_MAX_Y) newY = CURSOR_MAX_Y;
+
+    bool changed =
+      (newX != cursorX) ||
+      (newY != cursorY);
+
+    cursorX = newX;
+    cursorY = newY;
+
+    if (changed || leftPressed || middlePressed || rightPressed) {
+      redrawScreen();
+    }
   }
 }

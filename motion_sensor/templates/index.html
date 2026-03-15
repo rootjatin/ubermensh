@@ -1,497 +1,649 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <title>IMU Aircraft Controller</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <style>
-    html, body {
-      margin: 0;
-      overflow: hidden;
-      background: #87ceeb;
-      color: #fff;
-      font-family: Arial, sans-serif;
-    }
-
-    #hud {
-      position: fixed;
-      top: 12px;
-      left: 12px;
-      background: rgba(0, 0, 0, 0.45);
-      padding: 12px 14px;
-      border-radius: 10px;
-      z-index: 10;
-      font-size: 14px;
-      line-height: 1.6;
-      min-width: 280px;
-      backdrop-filter: blur(4px);
-    }
-
-    #hud .title {
-      font-weight: bold;
-      margin-bottom: 6px;
-      color: #ffd166;
-    }
-
-    #hud .ok {
-      color: #7CFC98;
-    }
-
-    #hud .bad {
-      color: #ff8a8a;
-    }
-
-    #hud .muted {
-      color: #cfd8dc;
-    }
-  </style>
+<meta charset="UTF-8" />
+<title>IMU Aircraft Controller</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<style>
+html, body {
+margin: 0;
+overflow: hidden;
+background: #87ceeb;
+color: #fff;
+font-family: Arial, sans-serif;
+}
+#hud {
+position: fixed;
+top: 12px;
+left: 12px;
+background: rgba(0, 0, 0, 0.45);
+padding: 12px 14px;
+border-radius: 10px;
+z-index: 10;
+font-size: 14px;
+line-height: 1.6;
+min-width: 300px;
+backdrop-filter: blur(4px);
+}
+#hud .title {
+font-weight: bold;
+margin-bottom: 6px;
+color: #ffd166;
+}
+#hud .ok {
+color: #7CFC98;
+}
+#hud .bad {
+color: #ff8a8a;
+}
+#hud .muted {
+color: #cfd8dc;
+}
+.hud-buttons {
+display: flex;
+gap: 8px;
+margin-top: 10px;
+flex-wrap: wrap;
+}
+.hud-buttons button {
+border: 0;
+border-radius: 8px;
+padding: 7px 10px;
+background: rgba(255,255,255,0.15);
+color: #fff;
+cursor: pointer;
+font-weight: 600;
+}
+.hud-buttons button:hover {
+background: rgba(255,255,255,0.22);
+}
+#reticle {
+position: fixed;
+inset: 0;
+pointer-events: none;
+z-index: 5;
+}
+#reticle::before, #reticle::after {
+content: "";
+position: absolute;
+left: 50%;
+top: 50%;
+transform: translate(-50%, -50%);
+background: rgba(255,255,255,0.85);
+border-radius: 999px;
+}
+#reticle::before {
+width: 22px;
+height: 2px;
+}
+#reticle::after {
+width: 2px;
+height: 22px;
+}
+</style>
 </head>
 <body>
-  <div id="hud">
-    <div class="title">IMU Flight HUD</div>
-    <div>Pitch: <span id="pitch">0</span>°</div>
-    <div>Roll: <span id="roll">0</span>°</div>
-    <div>Raw Pitch: <span id="rawPitch">0</span>°</div>
-    <div>Raw Roll: <span id="rawRoll">0</span>°</div>
-    <div>Altitude: <span id="altitude">0</span></div>
-    <div>Speed: <span id="speed">0</span></div>
-    <div>Source: <span id="source">starting...</span></div>
-    <div>Status: <span id="status">starting...</span></div>
-    <div style="margin-top:8px;" class="muted">
-      Tilt forward/back = dive/climb<br/>
-      Tilt left/right = bank/turn
-    </div>
-  </div>
-
-  <script type="module">
-    import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.module.js';
-
-    // ----------------------------------------------------
-    // Config
-    // ----------------------------------------------------
-    // Keep this true for now, because your Arduino output shows
-    // pitch/roll staying at 0 while rawPitch/rawRoll are changing.
-    // Once Arduino final pitch/roll are fixed, you can change this to false.
-    const USE_RAW_CENTERED_INPUT = true;
-
-    // Use the neutral values you captured from serial output.
-    // Update these if you recalibrate.
-    const RAW_PITCH_CENTER = 2.33;
-    const RAW_ROLL_CENTER = 17.64;
-
-    // Small dead zone to reduce jitter
-    const INPUT_DEAD_ZONE_DEG = 0.5;
-
-    // ----------------------------------------------------
-    // Scene / Camera / Renderer
-    // ----------------------------------------------------
-    const scene = new THREE.Scene();
-    scene.fog = new THREE.Fog(0x87ceeb, 80, 450);
-    scene.background = new THREE.Color(0x87ceeb);
-
-    const camera = new THREE.PerspectiveCamera(
-      70,
-      window.innerWidth / window.innerHeight,
-      0.1,
-      2000
-    );
-
-    const renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    document.body.appendChild(renderer.domElement);
-
-    // ----------------------------------------------------
-    // Lights
-    // ----------------------------------------------------
-    const ambient = new THREE.AmbientLight(0xffffff, 0.7);
-    scene.add(ambient);
-
-    const sun = new THREE.DirectionalLight(0xffffff, 1.2);
-    sun.position.set(80, 120, 50);
-    scene.add(sun);
-
-    // ----------------------------------------------------
-    // Ground
-    // ----------------------------------------------------
-    const groundGeo = new THREE.PlaneGeometry(2000, 2000, 40, 40);
-    const groundMat = new THREE.MeshLambertMaterial({ color: 0x4d8b31 });
-    const ground = new THREE.Mesh(groundGeo, groundMat);
-    ground.rotation.x = -Math.PI / 2;
-    ground.position.y = 0;
-    scene.add(ground);
-
-    const grid = new THREE.GridHelper(2000, 120, 0xffffff, 0xffffff);
-    grid.material.opacity = 0.12;
-    grid.material.transparent = true;
-    scene.add(grid);
-
-    // ----------------------------------------------------
-    // Runway
-    // ----------------------------------------------------
-    const runway = new THREE.Mesh(
-      new THREE.PlaneGeometry(30, 500),
-      new THREE.MeshStandardMaterial({ color: 0x2b2b2b })
-    );
-    runway.rotation.x = -Math.PI / 2;
-    runway.position.y = 0.02;
-    runway.position.z = -100;
-    scene.add(runway);
-
-    for (let i = 0; i < 18; i++) {
-      const mark = new THREE.Mesh(
-        new THREE.PlaneGeometry(2, 10),
-        new THREE.MeshBasicMaterial({ color: 0xffffff })
-      );
-      mark.rotation.x = -Math.PI / 2;
-      mark.position.set(0, 0.03, -320 + i * 18);
-      scene.add(mark);
-    }
-
-    // ----------------------------------------------------
-    // Clouds
-    // ----------------------------------------------------
-    function makeCloud() {
-      const group = new THREE.Group();
-      const mat = new THREE.MeshStandardMaterial({
-        color: 0xffffff,
-        roughness: 1
-      });
-
-      for (let i = 0; i < 5; i++) {
-        const puff = new THREE.Mesh(
-          new THREE.SphereGeometry(4 + Math.random() * 3, 16, 16),
-          mat
-        );
-        puff.position.set(
-          (Math.random() - 0.5) * 10,
-          Math.random() * 2,
-          (Math.random() - 0.5) * 6
-        );
-        puff.scale.y = 0.7 + Math.random() * 0.4;
-        group.add(puff);
-      }
-
-      return group;
-    }
-
-    for (let i = 0; i < 30; i++) {
-      const cloud = makeCloud();
-      cloud.position.set(
-        (Math.random() - 0.5) * 1200,
-        60 + Math.random() * 80,
-        (Math.random() - 0.5) * 1200
-      );
-      scene.add(cloud);
-    }
-
-    // ----------------------------------------------------
-    // Distant towers / reference objects
-    // ----------------------------------------------------
-    for (let i = 0; i < 50; i++) {
-      const h = 8 + Math.random() * 30;
-      const tower = new THREE.Mesh(
-        new THREE.BoxGeometry(6, h, 6),
-        new THREE.MeshStandardMaterial({ color: 0x8fa3b8 })
-      );
-      tower.position.set(
-        (Math.random() - 0.5) * 1200,
-        h / 2,
-        (Math.random() - 0.5) * 1200
-      );
-      scene.add(tower);
-    }
-
-    // ----------------------------------------------------
-    // Aircraft model
-    // ----------------------------------------------------
-    function createAircraft() {
-      const plane = new THREE.Group();
-
-      const bodyMat = new THREE.MeshStandardMaterial({
-        color: 0xd9d9d9,
-        metalness: 0.3,
-        roughness: 0.6
-      });
-
-      const wingMat = new THREE.MeshStandardMaterial({
-        color: 0xcc3333,
-        metalness: 0.2,
-        roughness: 0.7
-      });
-
-      const glassMat = new THREE.MeshStandardMaterial({
-        color: 0x225577,
-        metalness: 0.1,
-        roughness: 0.3
-      });
-
-      const fuselage = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.25, 0.35, 2.8, 18),
-        bodyMat
-      );
-      fuselage.rotation.z = Math.PI / 2;
-      plane.add(fuselage);
-
-      const nose = new THREE.Mesh(
-        new THREE.ConeGeometry(0.25, 0.7, 18),
-        new THREE.MeshStandardMaterial({ color: 0xff5533 })
-      );
-      nose.rotation.z = -Math.PI / 2;
-      nose.position.x = 1.75;
-      plane.add(nose);
-
-      const tailCone = new THREE.Mesh(
-        new THREE.ConeGeometry(0.22, 0.5, 18),
-        bodyMat
-      );
-      tailCone.rotation.z = Math.PI / 2;
-      tailCone.position.x = -1.65;
-      plane.add(tailCone);
-
-      const wing = new THREE.Mesh(
-        new THREE.BoxGeometry(0.18, 0.05, 3.2),
-        wingMat
-      );
-      wing.position.set(0.1, 0, 0);
-      plane.add(wing);
-
-      const tailWing = new THREE.Mesh(
-        new THREE.BoxGeometry(0.12, 0.04, 1.2),
-        wingMat
-      );
-      tailWing.position.set(-1.2, 0.18, 0);
-      plane.add(tailWing);
-
-      const fin = new THREE.Mesh(
-        new THREE.BoxGeometry(0.45, 0.55, 0.05),
-        wingMat
-      );
-      fin.position.set(-1.25, 0.45, 0);
-      plane.add(fin);
-
-      const cockpit = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 16, 16),
-        glassMat
-      );
-      cockpit.scale.set(1.6, 0.9, 1.0);
-      cockpit.position.set(0.5, 0.22, 0);
-      plane.add(cockpit);
-
-      const propHub = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.06, 0.06, 0.18, 12),
-        new THREE.MeshStandardMaterial({ color: 0x222222 })
-      );
-      propHub.rotation.z = Math.PI / 2;
-      propHub.position.x = 2.05;
-      plane.add(propHub);
-
-      const bladeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
-      const blade1 = new THREE.Mesh(
-        new THREE.BoxGeometry(0.04, 1.0, 0.08),
-        bladeMat
-      );
-      const blade2 = new THREE.Mesh(
-        new THREE.BoxGeometry(0.04, 0.08, 1.0),
-        bladeMat
-      );
-
-      const propeller = new THREE.Group();
-      propeller.add(blade1, blade2);
-      propeller.position.x = 2.12;
-      plane.add(propeller);
-
-      plane.userData.propeller = propeller;
-      return plane;
-    }
-
-    const aircraft = createAircraft();
-    aircraft.position.set(0, 10, 40);
-    scene.add(aircraft);
-
-    // ----------------------------------------------------
-    // HUD
-    // ----------------------------------------------------
-    const hudPitch = document.getElementById("pitch");
-    const hudRoll = document.getElementById("roll");
-    const hudRawPitch = document.getElementById("rawPitch");
-    const hudRawRoll = document.getElementById("rawRoll");
-    const hudAltitude = document.getElementById("altitude");
-    const hudSpeed = document.getElementById("speed");
-    const hudStatus = document.getElementById("status");
-    const hudSource = document.getElementById("source");
-
-    // ----------------------------------------------------
-    // IMU state
-    // ----------------------------------------------------
-    const imu = {
-      pitch: 0,
-      roll: 0,
-      rawPitch: 0,
-      rawRoll: 0,
-      connected: false,
-      source: "none"
-    };
-
-    function applyDeadZone(value, deadZone) {
-      return Math.abs(value) < deadZone ? 0 : value;
-    }
-
-    async function fetchIMU() {
-      try {
-        const res = await fetch(`/imu?t=${Date.now()}`, { cache: 'no-store' });
-
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}`);
-        }
-
-        const data = await res.json();
-
-        const finalPitch = Number(data.pitch ?? 0);
-        const finalRoll = Number(data.roll ?? 0);
-        const rawPitch = Number(data.rawPitch ?? finalPitch);
-        const rawRoll = Number(data.rawRoll ?? finalRoll);
-
-        imu.rawPitch = rawPitch;
-        imu.rawRoll = rawRoll;
-        imu.connected = !!data.connected;
-
-        if (USE_RAW_CENTERED_INPUT) {
-          imu.pitch = rawPitch - RAW_PITCH_CENTER;
-          imu.roll = rawRoll - RAW_ROLL_CENTER;
-          imu.source = "raw-centered";
-        } else {
-          imu.pitch = finalPitch;
-          imu.roll = finalRoll;
-          imu.source = "arduino-final";
-        }
-
-        imu.pitch = applyDeadZone(imu.pitch, INPUT_DEAD_ZONE_DEG);
-        imu.roll = applyDeadZone(imu.roll, INPUT_DEAD_ZONE_DEG);
-
-        hudPitch.textContent = imu.pitch.toFixed(2);
-        hudRoll.textContent = imu.roll.toFixed(2);
-        hudRawPitch.textContent = imu.rawPitch.toFixed(2);
-        hudRawRoll.textContent = imu.rawRoll.toFixed(2);
-        hudSource.textContent = imu.source;
-        hudStatus.textContent = imu.connected ? "connected" : "not connected";
-        hudStatus.className = imu.connected ? "ok" : "bad";
-      } catch (err) {
-        imu.connected = false;
-        hudStatus.textContent = "fetch error";
-        hudStatus.className = "bad";
-        hudSource.textContent = "no data";
-      }
-    }
-
-    fetchIMU();
-    setInterval(fetchIMU, 40);
-
-    // ----------------------------------------------------
-    // Flight physics (simple arcade flight)
-    // ----------------------------------------------------
-    let heading = 0;
-    let forwardSpeed = 0.55;
-    let verticalSpeed = 0;
-    let smoothedPitch = 0;
-    let smoothedRoll = 0;
-
-    const clock = new THREE.Clock();
-
-    function animate() {
-      requestAnimationFrame(animate);
-
-      const dt = Math.min(clock.getDelta(), 0.033);
-      const dtScale = dt * 60;
-
-      // Smooth sensor input
-      smoothedPitch = THREE.MathUtils.lerp(smoothedPitch, imu.pitch, 0.08);
-      smoothedRoll = THREE.MathUtils.lerp(smoothedRoll, imu.roll, 0.08);
-
-      // Limit extreme tilt
-      const pitchInput = THREE.MathUtils.clamp(smoothedPitch, -45, 45);
-      const rollInput = THREE.MathUtils.clamp(smoothedRoll, -45, 45);
-
-      // Flying behavior
-      const targetSpeed = THREE.MathUtils.clamp(
-        0.75 + (-pitchInput * 0.012),
-        0.18,
-        1.4
-      );
-      forwardSpeed = THREE.MathUtils.lerp(forwardSpeed, targetSpeed, 0.03);
-
-      // Roll controls turning
-      const turnRate = -rollInput * 0.0009;
-      heading += turnRate * dtScale;
-
-      // Pitch controls climb
-      const targetVertical = THREE.MathUtils.clamp(
-        -pitchInput * 0.02,
-        -0.65,
-        0.65
-      );
-      verticalSpeed = THREE.MathUtils.lerp(verticalSpeed, targetVertical, 0.03);
-
-      // Move aircraft (dt-scaled)
-      aircraft.position.x += Math.sin(heading) * forwardSpeed * dtScale;
-      aircraft.position.z += Math.cos(heading) * forwardSpeed * dtScale;
-      aircraft.position.y += verticalSpeed * dtScale;
-
-      // Keep above ground
-      if (aircraft.position.y < 2) {
-        aircraft.position.y = 2;
-        verticalSpeed = Math.max(verticalSpeed, 0);
-      }
-
-      // Cap altitude
-      aircraft.position.y = Math.min(aircraft.position.y, 180);
-
-      // Aircraft visual orientation
-      aircraft.rotation.order = 'YXZ';
-      aircraft.rotation.y = heading;
-      aircraft.rotation.z = THREE.MathUtils.degToRad(rollInput * 0.9);
-      aircraft.rotation.x = THREE.MathUtils.degToRad(pitchInput * 0.55);
-
-      // Spin propeller
-      aircraft.userData.propeller.rotation.x += forwardSpeed * 0.9 * dtScale;
-
-      // Camera follow
-      const camOffset = new THREE.Vector3(0, 3.0, -9.0);
-      const camWorldOffset = camOffset.clone().applyEuler(
-        new THREE.Euler(0, heading, 0)
-      );
-
-      const desiredCamPos = new THREE.Vector3(
-        aircraft.position.x - camWorldOffset.x,
-        aircraft.position.y + 2.2,
-        aircraft.position.z - camWorldOffset.z
-      );
-
-      camera.position.lerp(desiredCamPos, 0.08);
-
-      const lookTarget = new THREE.Vector3(
-        aircraft.position.x + Math.sin(heading) * 8,
-        aircraft.position.y + 0.8,
-        aircraft.position.z + Math.cos(heading) * 8
-      );
-      camera.lookAt(lookTarget);
-
-      hudAltitude.textContent = aircraft.position.y.toFixed(1);
-      hudSpeed.textContent = forwardSpeed.toFixed(2);
-
-      renderer.render(scene, camera);
-    }
-
-    animate();
-
-    // ----------------------------------------------------
-    // Resize
-    // ----------------------------------------------------
-    window.addEventListener('resize', () => {
-      camera.aspect = window.innerWidth / window.innerHeight;
-      camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
-  </script>
+<div id="hud">
+<div class="title">IMU Flight HUD</div>
+<div>Pitch: <span id="pitch">0</span>°</div>
+<div>Roll: <span id="roll">0</span>°</div>
+<div>Raw Pitch: <span id="rawPitch">0</span>°</div>
+<div>Raw Roll: <span id="rawRoll">0</span>°</div>
+<div>Altitude: <span id="altitude">0</span></div>
+<div>Speed: <span id="speed">0</span></div>
+<div>View: <span id="viewMode">cockpit</span></div>
+<div>Input: <span id="source">raw-centered</span></div>
+<div>Trim: <span id="trim">0 / 0</span></div>
+<div>Age: <span id="age">-</span></div>
+<div>Status: <span id="status">starting...</span></div>
+<div class="hud-buttons">
+<button id="btnCenter">Recenter</button>
+<button id="btnView">Toggle View</button>
+<button id="btnInput">Toggle Input</button>
+<button id="btnTrimReset">Reset Trim</button>
+</div>
+<div style="margin-top:8px;" class="muted">
+Tilt forward/back = dive/climb<br/>
+Tilt left/right = bank/turn<br/>
+C = recenter, V = view, 1 = raw, 2 = final, X = reset trim
+</div>
+</div>
+<div id="reticle"></div>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.183.0/build/three.module.js';
+
+// ----------------------------------------------------
+// Config
+// ----------------------------------------------------
+// Keep default on raw-centered because that is your currently working path.
+// Switch to "final" after confirming Arduino pitch/roll are stable and centered.
+let currentInputMode = 'raw'; // 'raw' | 'final'
+
+const RAW_PITCH_CENTER = 2.33;
+const RAW_ROLL_CENTER = 17.64;
+
+const INPUT_DEAD_ZONE_DEG = 0.45;
+const INPUT_EXPO = 0.32;
+
+const PITCH_RESPONSE_DEG = 32;
+const ROLL_RESPONSE_DEG = 40;
+
+const MIN_ALTITUDE = 2;
+const MAX_ALTITUDE = 180;
+
+const VISUAL_PITCH_SIGN = -1; // positive input should visually push nose down
+const VISUAL_ROLL_SIGN = 1;   // flip to -1 if bank looks reversed
+
+const COCKPIT_CAMERA_DEFAULT = true;
+
+// ----------------------------------------------------
+// Scene / Camera / Renderer
+// ----------------------------------------------------
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x87ceeb, 80, 450);
+scene.background = new THREE.Color(0x87ceeb);
+
+const camera = new THREE.PerspectiveCamera(
+76,
+window.innerWidth / window.innerHeight,
+0.03,
+2000
+);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+document.body.appendChild(renderer.domElement);
+
+// ----------------------------------------------------
+// Lights
+// ----------------------------------------------------
+const ambient = new THREE.AmbientLight(0xffffff, 0.7);
+scene.add(ambient);
+
+const sun = new THREE.DirectionalLight(0xffffff, 1.2);
+sun.position.set(80, 120, 50);
+scene.add(sun);
+
+// ----------------------------------------------------
+// Ground
+// ----------------------------------------------------
+const groundGeo = new THREE.PlaneGeometry(2000, 2000, 40, 40);
+const groundMat = new THREE.MeshLambertMaterial({ color: 0x4d8b31 });
+const ground = new THREE.Mesh(groundGeo, groundMat);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(2000, 120, 0xffffff, 0xffffff);
+grid.material.opacity = 0.12;
+grid.material.transparent = true;
+scene.add(grid);
+
+// ----------------------------------------------------
+// Runway
+// ----------------------------------------------------
+const runway = new THREE.Mesh(
+new THREE.PlaneGeometry(30, 500),
+new THREE.MeshStandardMaterial({ color: 0x2b2b2b })
+);
+runway.rotation.x = -Math.PI / 2;
+runway.position.y = 0.02;
+runway.position.z = -100;
+scene.add(runway);
+
+for (let i = 0; i < 18; i++) {
+const mark = new THREE.Mesh(
+new THREE.PlaneGeometry(2, 10),
+new THREE.MeshBasicMaterial({ color: 0xffffff })
+);
+mark.rotation.x = -Math.PI / 2;
+mark.position.set(0, 0.03, -320 + i * 18);
+scene.add(mark);
+}
+
+// ----------------------------------------------------
+// Clouds
+// ----------------------------------------------------
+function makeCloud() {
+const group = new THREE.Group();
+const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1 });
+
+for (let i = 0; i < 5; i++) {
+const puff = new THREE.Mesh(
+new THREE.SphereGeometry(4 + Math.random() * 3, 16, 16),
+mat
+);
+puff.position.set(
+(Math.random() - 0.5) * 10,
+Math.random() * 2,
+(Math.random() - 0.5) * 6
+);
+puff.scale.y = 0.7 + Math.random() * 0.4;
+group.add(puff);
+}
+return group;
+}
+
+for (let i = 0; i < 30; i++) {
+const cloud = makeCloud();
+cloud.position.set(
+(Math.random() - 0.5) * 1200,
+60 + Math.random() * 80,
+(Math.random() - 0.5) * 1200
+);
+scene.add(cloud);
+}
+
+// ----------------------------------------------------
+// Distant towers / reference objects
+// ----------------------------------------------------
+for (let i = 0; i < 50; i++) {
+const h = 8 + Math.random() * 30;
+const tower = new THREE.Mesh(
+new THREE.BoxGeometry(6, h, 6),
+new THREE.MeshStandardMaterial({ color: 0x8fa3b8 })
+);
+tower.position.set(
+(Math.random() - 0.5) * 1200,
+h / 2,
+(Math.random() - 0.5) * 1200
+);
+scene.add(tower);
+}
+
+// ----------------------------------------------------
+// Aircraft model
+// ----------------------------------------------------
+function createAircraft() {
+const plane = new THREE.Group();
+
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0xd9d9d9, metalness: 0.3, roughness: 0.6 });
+const wingMat = new THREE.MeshStandardMaterial({ color: 0xcc3333, metalness: 0.2, roughness: 0.7 });
+const glassMat = new THREE.MeshStandardMaterial({ color: 0x225577, metalness: 0.1, roughness: 0.3 });
+
+const fuselage = new THREE.Mesh(
+new THREE.CylinderGeometry(0.25, 0.35, 2.8, 18),
+bodyMat
+);
+fuselage.rotation.z = Math.PI / 2;
+plane.add(fuselage);
+
+const nose = new THREE.Mesh(
+new THREE.ConeGeometry(0.25, 0.7, 18),
+new THREE.MeshStandardMaterial({ color: 0xff5533 })
+);
+nose.rotation.z = -Math.PI / 2;
+nose.position.x = 1.75;
+plane.add(nose);
+
+const tailCone = new THREE.Mesh(
+new THREE.ConeGeometry(0.22, 0.5, 18),
+bodyMat
+);
+tailCone.rotation.z = Math.PI / 2;
+tailCone.position.x = -1.65;
+plane.add(tailCone);
+
+const wing = new THREE.Mesh(
+new THREE.BoxGeometry(0.18, 0.05, 3.2),
+wingMat
+);
+wing.position.set(0.1, 0, 0);
+plane.add(wing);
+
+const tailWing = new THREE.Mesh(
+new THREE.BoxGeometry(0.12, 0.04, 1.2),
+wingMat
+);
+tailWing.position.set(-1.2, 0.18, 0);
+plane.add(tailWing);
+
+const fin = new THREE.Mesh(
+new THREE.BoxGeometry(0.45, 0.55, 0.05),
+wingMat
+);
+fin.position.set(-1.25, 0.45, 0);
+plane.add(fin);
+
+const cockpit = new THREE.Mesh(
+new THREE.SphereGeometry(0.22, 16, 16),
+glassMat
+);
+cockpit.scale.set(1.6, 0.9, 1.0);
+cockpit.position.set(0.5, 0.22, 0);
+plane.add(cockpit);
+
+const propHub = new THREE.Mesh(
+new THREE.CylinderGeometry(0.06, 0.06, 0.18, 12),
+new THREE.MeshStandardMaterial({ color: 0x222222 })
+);
+propHub.rotation.z = Math.PI / 2;
+propHub.position.x = 2.05;
+plane.add(propHub);
+
+const bladeMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+const blade1 = new THREE.Mesh(
+new THREE.BoxGeometry(0.04, 1.0, 0.08),
+bladeMat
+);
+const blade2 = new THREE.Mesh(
+new THREE.BoxGeometry(0.04, 0.08, 1.0),
+bladeMat
+);
+
+const propeller = new THREE.Group();
+propeller.add(blade1, blade2);
+propeller.position.x = 2.12;
+plane.add(propeller);
+
+plane.userData.propeller = propeller;
+
+return plane;
+}
+
+const aircraft = createAircraft();
+
+// ----------------------------------------------------
+// Aircraft rig
+// ----------------------------------------------------
+// Forward axis of your model is +X.
+// Yaw is on the outer rig, pitch on Z, roll on X.
+const planeYawRig = new THREE.Group();
+const planePitchRig = new THREE.Group();
+const planeRollRig = new THREE.Group();
+
+planeYawRig.position.set(0, 10, 40);
+scene.add(planeYawRig);
+planeYawRig.add(planePitchRig);
+planePitchRig.add(planeRollRig);
+planeRollRig.add(aircraft);
+
+// Cockpit camera anchor: full yaw + pitch + roll
+const cockpitAnchor = new THREE.Object3D();
+cockpitAnchor.position.set(0.55, 0.34, 0.0);
+planeRollRig.add(cockpitAnchor);
+
+const cockpitCameraMount = new THREE.Object3D();
+cockpitCameraMount.rotation.y = -Math.PI / 2;
+cockpitAnchor.add(cockpitCameraMount);
+
+// Chase camera anchor: follows yaw + pitch, but does not roll heavily
+const chaseAnchor = new THREE.Object3D();
+chaseAnchor.position.set(-10.5, 4.2, 0.0);
+planePitchRig.add(chaseAnchor);
+
+const chaseLookAnchor = new THREE.Object3D();
+chaseLookAnchor.position.set(14, 1.0, 0.0);
+planePitchRig.add(chaseLookAnchor);
+
+let cockpitMode = COCKPIT_CAMERA_DEFAULT;
+
+// ----------------------------------------------------
+// HUD
+// ----------------------------------------------------
+const hudPitch = document.getElementById('pitch');
+const hudRoll = document.getElementById('roll');
+const hudRawPitch = document.getElementById('rawPitch');
+const hudRawRoll = document.getElementById('rawRoll');
+const hudAltitude = document.getElementById('altitude');
+const hudSpeed = document.getElementById('speed');
+const hudStatus = document.getElementById('status');
+const hudSource = document.getElementById('source');
+const hudAge = document.getElementById('age');
+const hudViewMode = document.getElementById('viewMode');
+const hudTrim = document.getElementById('trim');
+
+const btnCenter = document.getElementById('btnCenter');
+const btnView = document.getElementById('btnView');
+const btnInput = document.getElementById('btnInput');
+const btnTrimReset = document.getElementById('btnTrimReset');
+
+// ----------------------------------------------------
+// IMU state
+// ----------------------------------------------------
+const imu = {
+pitch: 0,
+roll: 0,
+rawPitch: 0,
+rawRoll: 0,
+trimPitch: 0,
+trimRoll: 0,
+connected: false,
+source: 'none',
+ageMs: null
+};
+
+function applyDeadZone(value, deadZone) {
+return Math.abs(value) < deadZone ? 0 : value;
+}
+
+function damp(current, target, lambda, dt) {
+return THREE.MathUtils.lerp(current, target, 1 - Math.exp(-lambda * dt));
+}
+
+function shapeInputDegrees(valueDeg, responseDeg, expo) {
+const n = THREE.MathUtils.clamp(valueDeg / responseDeg, -1, 1);
+const shaped = ((1 - expo) * n) + (expo * n * n * n);
+return shaped * responseDeg;
+}
+
+function updateTrimHud() {
+hudTrim.textContent = `${imu.trimPitch.toFixed(2)} / ${imu.trimRoll.toFixed(2)}`;
+}
+
+function recenterControls() {
+imu.trimPitch += imu.pitch;
+imu.trimRoll += imu.roll;
+updateTrimHud();
+}
+
+function resetTrim() {
+imu.trimPitch = 0;
+imu.trimRoll = 0;
+updateTrimHud();
+}
+
+function toggleView() {
+cockpitMode = !cockpitMode;
+hudViewMode.textContent = cockpitMode ? 'cockpit' : 'chase';
+}
+
+function setInputMode(mode) {
+currentInputMode = mode;
+hudSource.textContent = currentInputMode === 'final' ? 'arduino-final' : 'raw-centered';
+}
+
+function toggleInputMode() {
+setInputMode(currentInputMode === 'raw' ? 'final' : 'raw');
+}
+
+btnCenter.addEventListener('click', recenterControls);
+btnView.addEventListener('click', toggleView);
+btnInput.addEventListener('click', toggleInputMode);
+btnTrimReset.addEventListener('click', resetTrim);
+
+window.addEventListener('keydown', (e) => {
+const key = e.key.toLowerCase();
+if (key === 'c') recenterControls();
+if (key === 'v') toggleView();
+if (key === 'x') resetTrim();
+if (key === '1') setInputMode('raw');
+if (key === '2') setInputMode('final');
+});
+
+async function fetchIMU() {
+try {
+const res = await fetch(`/imu?t=${Date.now()}`, { cache: 'no-store' });
+if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+const data = await res.json();
+
+const finalPitch = Number(data.pitch ?? 0);
+const finalRoll = Number(data.roll ?? 0);
+const rawPitch = Number(data.rawPitch ?? finalPitch);
+const rawRoll = Number(data.rawRoll ?? finalRoll);
+
+imu.rawPitch = rawPitch;
+imu.rawRoll = rawRoll;
+imu.connected = !!data.connected && !data.stale;
+imu.ageMs = data.age_ms ?? null;
+
+let selectedPitch;
+let selectedRoll;
+
+if (currentInputMode === 'final') {
+selectedPitch = finalPitch;
+selectedRoll = finalRoll;
+imu.source = 'arduino-final';
+} else {
+selectedPitch = rawPitch - RAW_PITCH_CENTER;
+selectedRoll = rawRoll - RAW_ROLL_CENTER;
+imu.source = 'raw-centered';
+}
+
+selectedPitch -= imu.trimPitch;
+selectedRoll -= imu.trimRoll;
+
+imu.pitch = applyDeadZone(selectedPitch, INPUT_DEAD_ZONE_DEG);
+imu.roll = applyDeadZone(selectedRoll, INPUT_DEAD_ZONE_DEG);
+
+hudPitch.textContent = imu.pitch.toFixed(2);
+hudRoll.textContent = imu.roll.toFixed(2);
+hudRawPitch.textContent = imu.rawPitch.toFixed(2);
+hudRawRoll.textContent = imu.rawRoll.toFixed(2);
+hudSource.textContent = imu.source;
+hudAge.textContent = imu.ageMs == null ? '-' : `${imu.ageMs} ms`;
+hudStatus.textContent = imu.connected ? 'connected' : 'not connected';
+hudStatus.className = imu.connected ? 'ok' : 'bad';
+} catch (err) {
+imu.connected = false;
+hudStatus.textContent = 'fetch error';
+hudStatus.className = 'bad';
+hudAge.textContent = '-';
+}
+}
+
+let imuPollInFlight = false;
+
+async function imuPollLoop() {
+if (!imuPollInFlight) {
+imuPollInFlight = true;
+try {
+await fetchIMU();
+} finally {
+imuPollInFlight = false;
+}
+}
+setTimeout(imuPollLoop, 20);
+}
+
+setInputMode(currentInputMode);
+updateTrimHud();
+imuPollLoop();
+
+// ----------------------------------------------------
+// Flight physics (more natural, still arcade-safe)
+// ----------------------------------------------------
+let heading = 0;
+let forwardSpeed = 34; // world units / second
+let verticalSpeed = 0; // world units / second
+let turnRate = 0;      // radians / second
+
+let smoothedPitch = 0;
+let smoothedRoll = 0;
+
+const clock = new THREE.Clock();
+const tempPos = new THREE.Vector3();
+const tempLook = new THREE.Vector3();
+const tempQuat = new THREE.Quaternion();
+
+function updateCamera(dt) {
+if (cockpitMode) {
+aircraft.visible = false;
+cockpitCameraMount.getWorldPosition(tempPos);
+cockpitCameraMount.getWorldQuaternion(tempQuat);
+camera.position.lerp(tempPos, 1 - Math.exp(-18 * dt));
+camera.quaternion.slerp(tempQuat, 1 - Math.exp(-18 * dt));
+} else {
+aircraft.visible = true;
+chaseAnchor.getWorldPosition(tempPos);
+chaseLookAnchor.getWorldPosition(tempLook);
+camera.up.set(0, 1, 0);
+camera.position.lerp(tempPos, 1 - Math.exp(-8 * dt));
+camera.lookAt(tempLook);
+}
+}
+
+function animate() {
+requestAnimationFrame(animate);
+
+const dt = Math.min(clock.getDelta(), 0.05);
+
+// Smooth sensor input in a frame-rate independent way
+smoothedPitch = damp(smoothedPitch, imu.pitch, 10.0, dt);
+smoothedRoll = damp(smoothedRoll, imu.roll, 10.0, dt);
+
+// Shape input: small motions are precise, large motions still reach full authority
+const pitchInput = shapeInputDegrees(smoothedPitch, PITCH_RESPONSE_DEG, INPUT_EXPO);
+const rollInput = shapeInputDegrees(smoothedRoll, ROLL_RESPONSE_DEG, INPUT_EXPO);
+
+// Speed model: dive = slightly faster, climb = slightly slower, sharp banks bleed some speed
+const targetSpeed = THREE.MathUtils.clamp(
+35 + (-pitchInput * 0.60) - (Math.abs(rollInput) * 0.12),
+14,
+68
+);
+forwardSpeed = damp(forwardSpeed, targetSpeed, 2.4, dt);
+
+// Roll drives turn. Speed slightly increases turn authority so it feels more aircraft-like.
+const targetTurnRate = THREE.MathUtils.degToRad(
+-rollInput * (0.55 + (forwardSpeed / 55))
+);
+turnRate = damp(turnRate, targetTurnRate, 3.4, dt);
+heading += turnRate * dt;
+
+// Pitch drives climb / descent
+const targetVertical = THREE.MathUtils.clamp(-pitchInput * 0.78, -18, 18);
+verticalSpeed = damp(verticalSpeed, targetVertical, 3.0, dt);
+
+planeYawRig.position.x += Math.sin(heading) * forwardSpeed * dt;
+planeYawRig.position.z += Math.cos(heading) * forwardSpeed * dt;
+planeYawRig.position.y += verticalSpeed * dt;
+
+if (planeYawRig.position.y < MIN_ALTITUDE) {
+planeYawRig.position.y = MIN_ALTITUDE;
+verticalSpeed = Math.max(verticalSpeed, 0);
+}
+planeYawRig.position.y = Math.min(planeYawRig.position.y, MAX_ALTITUDE);
+
+// Important fix: pitch and roll were visually applied on the wrong axes before.
+planeYawRig.rotation.y = heading;
+planePitchRig.rotation.z = THREE.MathUtils.degToRad(pitchInput * 0.55 * VISUAL_PITCH_SIGN);
+planeRollRig.rotation.x = THREE.MathUtils.degToRad(rollInput * 0.95 * VISUAL_ROLL_SIGN);
+
+aircraft.userData.propeller.rotation.x += forwardSpeed * dt * 1.6;
+
+updateCamera(dt);
+
+hudAltitude.textContent = planeYawRig.position.y.toFixed(1);
+hudSpeed.textContent = forwardSpeed.toFixed(1);
+hudViewMode.textContent = cockpitMode ? 'cockpit' : 'chase';
+
+renderer.render(scene, camera);
+}
+
+animate();
+
+// ----------------------------------------------------
+// Resize
+// ----------------------------------------------------
+window.addEventListener('resize', () => {
+camera.aspect = window.innerWidth / window.innerHeight;
+camera.updateProjectionMatrix();
+renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
 </body>
 </html>

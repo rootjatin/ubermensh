@@ -216,3 +216,18 @@ void patternRandomFill() {
   clearCube();
   refreshCube(150);
 }
+void loop() {
+  patternDotScan();
+  patternRows();
+  patternColumns();
+  patternDiagonals();
+  patternRain();
+  patternSnake();
+
+  patternLayerBlink();
+  patternCheckerSwap();
+  patternEdgeSpin();
+  patternCenterPulse();
+  patternWallSweep();
+  patternRandomFill();
+}

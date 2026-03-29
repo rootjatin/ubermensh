@@ -132,7 +132,7 @@ void patternDotScan() {
   for (byte z = 0; z < 2; z++) {
     for (byte y = 0; y < 5; y++) {
       for (byte x = 0; x < 5; x++) {
-        showDot(x, y, z, 70);
+        showDot(x, y, z, 180);   // was 70
       }
     }
   }
@@ -141,7 +141,7 @@ void patternDotScan() {
 void patternRows() {
   for (byte z = 0; z < 2; z++) {
     for (byte y = 0; y < 5; y++) {
-      showRow(y, z, 120);
+      showRow(y, z, 300);        // was 120
     }
   }
 }
@@ -149,15 +149,15 @@ void patternRows() {
 void patternColumns() {
   for (byte z = 0; z < 2; z++) {
     for (byte x = 0; x < 5; x++) {
-      showColumn(x, z, 120);
+      showColumn(x, z, 300);     // was 120
     }
   }
 }
 
 void patternDiagonals() {
   for (byte z = 0; z < 2; z++) {
-    showMainDiagonal(z, 180);
-    showAntiDiagonal(z, 180);
+    showMainDiagonal(z, 400);    // was 180
+    showAntiDiagonal(z, 400);    // was 180
   }
 }
 
@@ -168,11 +168,11 @@ void patternRain() {
 
     clearCube();
     setVoxel(x, y, 1, true);   // top layer
-    refreshCube(90);
+    refreshCube(220);          // was 90
 
     clearCube();
     setVoxel(x, y, 0, true);   // bottom layer
-    refreshCube(90);
+    refreshCube(220);          // was 90
   }
 }
 
@@ -183,11 +183,11 @@ void patternSnake() {
   for (byte y = 0; y < 5; y++) {
     if (y % 2 == 0) {
       for (byte x = 0; x < 5; x++) {
-        showDot(x, y, 0, 60);
+        showDot(x, y, 0, 180);   // was 60
       }
     } else {
       for (int x = 4; x >= 0; x--) {
-        showDot(x, y, 0, 60);
+        showDot(x, y, 0, 180);   // was 60
       }
     }
   }
@@ -196,11 +196,11 @@ void patternSnake() {
   for (byte y = 0; y < 5; y++) {
     if (y % 2 == 0) {
       for (byte x = 0; x < 5; x++) {
-        showDot(x, y, 1, 60);
+        showDot(x, y, 1, 180);   // was 60
       }
     } else {
       for (int x = 4; x >= 0; x--) {
-        showDot(x, y, 1, 60);
+        showDot(x, y, 1, 180);   // was 60
       }
     }
   }

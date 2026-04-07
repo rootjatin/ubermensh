@@ -1,16 +1,39 @@
 #include <Wire.h>
 #include <math.h>
+#include "BluetoothSerial.h"
 
+#if !defined(CONFIG_BT_ENABLED) || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled in this ESP32 core build
+#endif
+
+#if !defined(CONFIG_BT_SPP_ENABLED)
+#error Bluetooth Serial (SPP) is not available on this target. Use a classic ESP32 board.
+#endif
+
+BluetoothSerial SerialBT;
+
+// --------------------------------------------------
+// User config
+// --------------------------------------------------
+const char* BT_DEVICE_NAME = "ESP32-IMU-Flight";
+const bool ENABLE_USB_SERIAL = true;
+const bool ENABLE_BT_SERIAL  = true;
+
+// I2C pins for generic ESP32
+const int SDA_PIN = 21;
+const int SCL_PIN = 22;
+
+// MPU6050 I2C address
 uint8_t IMU_ADDR = 0x68;
 
 // Registers
-const uint8_t REG_SMPLRT_DIV = 0x19;
-const uint8_t REG_CONFIG = 0x1A;
-const uint8_t REG_GYRO_CONFIG = 0x1B;
+const uint8_t REG_SMPLRT_DIV   = 0x19;
+const uint8_t REG_CONFIG       = 0x1A;
+const uint8_t REG_GYRO_CONFIG  = 0x1B;
 const uint8_t REG_ACCEL_CONFIG = 0x1C;
 const uint8_t REG_ACCEL_XOUT_H = 0x3B;
-const uint8_t REG_PWR_MGMT_1 = 0x6B;
-const uint8_t REG_WHO_AM_I = 0x75;
+const uint8_t REG_PWR_MGMT_1   = 0x6B;
+const uint8_t REG_WHO_AM_I     = 0x75;
 
 // Raw sensor data
 int16_t axRaw, ayRaw, azRaw;
@@ -44,6 +67,7 @@ float neutralPitch = 0.0f;
 // Timing
 unsigned long lastMicros = 0;
 unsigned long lastPrintMs = 0;
+unsigned long lastStatusMs = 0;
 
 // IMU type
 uint8_t detectedWhoAmI = 0x00;
@@ -53,16 +77,43 @@ bool imuReady = false;
 bool filterInitialized = false;
 
 // Tunables
-const float ACCEL_SCALE = 16384.0f;     // +/-2g
-const float GYRO_SCALE = 131.0f;        // +/-250 dps
+const float ACCEL_SCALE = 16384.0f;      // +/-2g
+const float GYRO_SCALE = 131.0f;         // +/-250 dps
 const float COMPLEMENTARY_ALPHA = 0.98f;
 const float OUTPUT_SMOOTH_ALPHA = 0.18f;
 const float DEAD_ZONE_DEG = 0.5f;
 const unsigned long PRINT_INTERVAL_MS = 20;
+const unsigned long STATUS_INTERVAL_MS = 1500;
 
 // If controls feel reversed, change one or both signs below
 const float PITCH_SIGN = 1.0f;
-const float ROLL_SIGN = 1.0f;
+const float ROLL_SIGN  = 1.0f;
+
+// --------------------------------------------------
+// Output helpers
+// --------------------------------------------------
+void outPrint(const String& s) {
+  if (ENABLE_USB_SERIAL) Serial.print(s);
+  if (ENABLE_BT_SERIAL && SerialBT.hasClient()) SerialBT.print(s);
+}
+
+void outPrintln(const String& s) {
+  if (ENABLE_USB_SERIAL) Serial.println(s);
+  if (ENABLE_BT_SERIAL && SerialBT.hasClient()) SerialBT.println(s);
+}
+
+void outPrintf(const char* fmt, ...) {
+  char buf[256];
+  va_list args;
+  va_start(args, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, args);
+  va_end(args);
+  outPrint(String(buf));
+}
+
+void localPrintln(const String& s) {
+  if (ENABLE_USB_SERIAL) Serial.println(s);
+}
 
 // --------------------------------------------------
 // I2C helpers
@@ -115,40 +166,40 @@ bool readRawIMU() {
     return false;
   }
 
-  axRaw = (int16_t)((buf[0] << 8) | buf[1]);
-  ayRaw = (int16_t)((buf[2] << 8) | buf[3]);
-  azRaw = (int16_t)((buf[4] << 8) | buf[5]);
-  tempRaw = (int16_t)((buf[6] << 8) | buf[7]);
-  gxRaw = (int16_t)((buf[8] << 8) | buf[9]);
-  gyRaw = (int16_t)((buf[10] << 8) | buf[11]);
-  gzRaw = (int16_t)((buf[12] << 8) | buf[13]);
+  axRaw   = (int16_t)((buf[0]  << 8) | buf[1]);
+  ayRaw   = (int16_t)((buf[2]  << 8) | buf[3]);
+  azRaw   = (int16_t)((buf[4]  << 8) | buf[5]);
+  tempRaw = (int16_t)((buf[6]  << 8) | buf[7]);
+  gxRaw   = (int16_t)((buf[8]  << 8) | buf[9]);
+  gyRaw   = (int16_t)((buf[10] << 8) | buf[11]);
+  gzRaw   = (int16_t)((buf[12] << 8) | buf[13]);
   return true;
 }
 
 bool setupIMU() {
   detectedWhoAmI = readRegister(REG_WHO_AM_I);
 
-  Serial.print("WHO_AM_I = 0x");
-  Serial.println(detectedWhoAmI, HEX);
-
-  if (detectedWhoAmI == 0x68) {
-    Serial.println("Detected MPU6050-like IMU");
-  } else if (detectedWhoAmI == 0x70 || detectedWhoAmI == 0x71 || detectedWhoAmI == 0x73) {
-    Serial.println("Detected MPU6500/MPU9250-like IMU");
-  } else {
-    Serial.println("Unknown IMU response, trying anyway...");
+  localPrintln("");
+  localPrintln("Checking MPU6050...");
+  if (ENABLE_USB_SERIAL) {
+    Serial.print("WHO_AM_I = 0x");
+    Serial.println(detectedWhoAmI, HEX);
   }
 
-  // Wake up device
-  if (!writeRegister(REG_PWR_MGMT_1, 0x80)) return false;  // reset
+  if (detectedWhoAmI != 0x68) {
+    localPrintln("Unexpected WHO_AM_I, trying anyway...");
+  }
+
+  // Wake/reset
+  if (!writeRegister(REG_PWR_MGMT_1, 0x80)) return false;
   delay(100);
-  if (!writeRegister(REG_PWR_MGMT_1, 0x01)) return false;  // auto select clock
+  if (!writeRegister(REG_PWR_MGMT_1, 0x01)) return false;
   delay(50);
 
-  // Low-pass filter and sample settings
-  if (!writeRegister(REG_CONFIG, 0x03)) return false;       // DLPF
-  if (!writeRegister(REG_SMPLRT_DIV, 0x04)) return false;   // sample divider
-  if (!writeRegister(REG_GYRO_CONFIG, 0x00)) return false;  // +/-250 dps
+  // LPF and sample settings
+  if (!writeRegister(REG_CONFIG, 0x03))       return false; // DLPF
+  if (!writeRegister(REG_SMPLRT_DIV, 0x04))   return false; // sample divider
+  if (!writeRegister(REG_GYRO_CONFIG, 0x00))  return false; // +/-250 dps
   if (!writeRegister(REG_ACCEL_CONFIG, 0x00)) return false; // +/-2g
 
   delay(50);
@@ -167,9 +218,9 @@ void calibrateFlatStill(int samples = 600) {
   long gzSum = 0;
   int good = 0;
 
-  Serial.println();
-  Serial.println("STEP 1: Put sensor FLAT and STILL.");
-  Serial.println("Calibration starts in 3 seconds...");
+  outPrintln("");
+  outPrintln("STEP 1: Put sensor FLAT and STILL.");
+  outPrintln("Calibration starts in 3 seconds...");
   delay(3000);
 
   for (int i = 0; i < samples; i++) {
@@ -186,7 +237,7 @@ void calibrateFlatStill(int samples = 600) {
   }
 
   if (good == 0) {
-    Serial.println("Calibration failed: no samples read.");
+    outPrintln("Calibration failed: no samples read.");
     return;
   }
 
@@ -206,13 +257,13 @@ void calibrateFlatStill(int samples = 600) {
   gyOffset = gyAvg;
   gzOffset = gzAvg;
 
-  Serial.println("Flat calibration done.");
-  Serial.print("axOffset = "); Serial.println(axOffset, 3);
-  Serial.print("ayOffset = "); Serial.println(ayOffset, 3);
-  Serial.print("azOffset = "); Serial.println(azOffset, 3);
-  Serial.print("gxOffset = "); Serial.println(gxOffset, 3);
-  Serial.print("gyOffset = "); Serial.println(gyOffset, 3);
-  Serial.print("gzOffset = "); Serial.println(gzOffset, 3);
+  outPrintln("Flat calibration done.");
+  outPrintf("axOffset = %.3f\n", axOffset);
+  outPrintf("ayOffset = %.3f\n", ayOffset);
+  outPrintf("azOffset = %.3f\n", azOffset);
+  outPrintf("gxOffset = %.3f\n", gxOffset);
+  outPrintf("gyOffset = %.3f\n", gyOffset);
+  outPrintf("gzOffset = %.3f\n", gzOffset);
 }
 
 void updateFilterOnce() {
@@ -225,9 +276,8 @@ void updateFilterOnce() {
   float az = ((float)azRaw - azOffset) / ACCEL_SCALE;
   float gx = ((float)gxRaw - gxOffset) / GYRO_SCALE;
   float gy = ((float)gyRaw - gyOffset) / GYRO_SCALE;
-  // gz is available but not used in pitch/roll filter directly
 
-  float accelRoll = atan2f(ay, az) * 180.0f / PI;
+  float accelRoll  = atan2f(ay, az) * 180.0f / PI;
   float accelPitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * 180.0f / PI;
 
   unsigned long nowMicros = micros();
@@ -244,7 +294,7 @@ void updateFilterOnce() {
     fusedPitch = accelPitch;
     filterInitialized = true;
   } else {
-    fusedRoll = COMPLEMENTARY_ALPHA * (fusedRoll + gx * dt) + (1.0f - COMPLEMENTARY_ALPHA) * accelRoll;
+    fusedRoll  = COMPLEMENTARY_ALPHA * (fusedRoll + gx * dt)  + (1.0f - COMPLEMENTARY_ALPHA) * accelRoll;
     fusedPitch = COMPLEMENTARY_ALPHA * (fusedPitch + gy * dt) + (1.0f - COMPLEMENTARY_ALPHA) * accelPitch;
   }
 
@@ -265,9 +315,9 @@ void captureNeutralPose(int samples = 250) {
   float pitchSum = 0.0f;
   int good = 0;
 
-  Serial.println();
-  Serial.println("STEP 2: Hold sensor in your NORMAL hand position.");
-  Serial.println("Capturing neutral pose in 3 seconds...");
+  outPrintln("");
+  outPrintln("STEP 2: Hold sensor in your NORMAL hand position.");
+  outPrintln("Capturing neutral pose in 3 seconds...");
   delay(3000);
 
   letFilterSettle(1000);
@@ -281,7 +331,7 @@ void captureNeutralPose(int samples = 250) {
   }
 
   if (good == 0) {
-    Serial.println("Neutral capture failed.");
+    outPrintln("Neutral capture failed.");
     return;
   }
 
@@ -291,15 +341,15 @@ void captureNeutralPose(int samples = 250) {
   smoothRoll = 0.0f;
   smoothPitch = 0.0f;
 
-  Serial.println("Neutral pose captured.");
-  Serial.print("neutralRoll = "); Serial.println(neutralRoll, 2);
-  Serial.print("neutralPitch = "); Serial.println(neutralPitch, 2);
-  Serial.println("Send 'c' to recenter.");
-  Serial.println("Send 'r' to recalibrate.");
+  outPrintln("Neutral pose captured.");
+  outPrintf("neutralRoll = %.2f\n", neutralRoll);
+  outPrintf("neutralPitch = %.2f\n", neutralPitch);
+  outPrintln("Send 'c' to recenter.");
+  outPrintln("Send 'r' to recalibrate.");
 }
 
 // --------------------------------------------------
-// Output helpers
+// Output JSON
 // --------------------------------------------------
 float applyDeadZone(float value, float deadZone) {
   if (fabs(value) < deadZone) {
@@ -309,38 +359,48 @@ float applyDeadZone(float value, float deadZone) {
 }
 
 void printJSON(float pitchOut, float rollOut, float gxDegPerSec, float gyDegPerSec, float gzDegPerSec) {
-  Serial.print("{\"pitch\":");
-  Serial.print(pitchOut, 2);
-  Serial.print(",\"roll\":");
-  Serial.print(rollOut, 2);
-  Serial.print(",\"rawPitch\":");
-  Serial.print(rawPitchDeg, 2);
-  Serial.print(",\"rawRoll\":");
-  Serial.print(rawRollDeg, 2);
-  Serial.print(",\"gx\":");
-  Serial.print(gxDegPerSec, 2);
-  Serial.print(",\"gy\":");
-  Serial.print(gyDegPerSec, 2);
-  Serial.print(",\"gz\":");
-  Serial.print(gzDegPerSec, 2);
-  Serial.println("}");
+  char line[220];
+  snprintf(
+    line,
+    sizeof(line),
+    "{\"pitch\":%.2f,\"roll\":%.2f,\"rawPitch\":%.2f,\"rawRoll\":%.2f,\"gx\":%.2f,\"gy\":%.2f,\"gz\":%.2f}",
+    pitchOut,
+    rollOut,
+    rawPitchDeg,
+    rawRollDeg,
+    gxDegPerSec,
+    gyDegPerSec,
+    gzDegPerSec
+  );
+
+  if (ENABLE_USB_SERIAL) Serial.println(line);
+  if (ENABLE_BT_SERIAL && SerialBT.hasClient()) SerialBT.println(line);
 }
 
 // --------------------------------------------------
-// Serial commands
+// Commands from USB serial and Bluetooth serial
 // --------------------------------------------------
+void processCommandChar(char c) {
+  if (c == 'c' || c == 'C') {
+    captureNeutralPose();
+  } else if (c == 'r' || c == 'R') {
+    calibrateFlatStill();
+    filterInitialized = false;
+    lastMicros = 0;
+    letFilterSettle(1200);
+    captureNeutralPose();
+  }
+}
+
 void handleCommands() {
-  while (Serial.available()) {
+  while (ENABLE_USB_SERIAL && Serial.available()) {
     char c = (char)Serial.read();
-    if (c == 'c' || c == 'C') {
-      captureNeutralPose();
-    } else if (c == 'r' || c == 'R') {
-      calibrateFlatStill();
-      filterInitialized = false;
-      lastMicros = 0;
-      letFilterSettle(1200);
-      captureNeutralPose();
-    }
+    processCommandChar(c);
+  }
+
+  while (ENABLE_BT_SERIAL && SerialBT.available()) {
+    char c = (char)SerialBT.read();
+    processCommandChar(c);
   }
 }
 
@@ -348,23 +408,31 @@ void handleCommands() {
 // Setup / loop
 // --------------------------------------------------
 void setup() {
-  Serial.begin(115200);
-  delay(300);
+  if (ENABLE_USB_SERIAL) {
+    Serial.begin(115200);
+    delay(300);
+  }
 
-  Wire.begin();
+  Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(400000);
 
-  Serial.println("Starting IMU aircraft controller...");
-  Serial.print("Trying 0x");
-  Serial.println(IMU_ADDR, HEX);
+  if (ENABLE_BT_SERIAL) {
+    SerialBT.begin(BT_DEVICE_NAME);
+  }
+
+  localPrintln("Starting ESP32 MPU6050 Bluetooth flight controller...");
+  localPrintln("USB Serial: 115200");
+  if (ENABLE_USB_SERIAL) {
+    Serial.printf("Bluetooth name: %s\n", BT_DEVICE_NAME);
+  }
 
   if (!setupIMU()) {
-    Serial.println("IMU setup failed.");
+    localPrintln("IMU setup failed.");
     imuReady = false;
     return;
   }
 
-  Serial.println("IMU found at address 0x68");
+  localPrintln("IMU found at address 0x68");
   imuReady = true;
 
   calibrateFlatStill();
@@ -374,6 +442,7 @@ void setup() {
   captureNeutralPose();
 
   lastPrintMs = millis();
+  lastStatusMs = millis();
 }
 
 void loop() {
@@ -396,7 +465,7 @@ void loop() {
   float gy = ((float)gyRaw - gyOffset) / GYRO_SCALE;
   float gz = ((float)gzRaw - gzOffset) / GYRO_SCALE;
 
-  float accelRoll = atan2f(ay, az) * 180.0f / PI;
+  float accelRoll  = atan2f(ay, az) * 180.0f / PI;
   float accelPitch = atan2f(-ax, sqrtf(ay * ay + az * az)) * 180.0f / PI;
 
   unsigned long nowMicros = micros();
@@ -414,25 +483,32 @@ void loop() {
     fusedPitch = accelPitch;
     filterInitialized = true;
   } else {
-    fusedRoll = COMPLEMENTARY_ALPHA * (fusedRoll + gx * dt) + (1.0f - COMPLEMENTARY_ALPHA) * accelRoll;
+    fusedRoll  = COMPLEMENTARY_ALPHA * (fusedRoll + gx * dt)  + (1.0f - COMPLEMENTARY_ALPHA) * accelRoll;
     fusedPitch = COMPLEMENTARY_ALPHA * (fusedPitch + gy * dt) + (1.0f - COMPLEMENTARY_ALPHA) * accelPitch;
   }
 
   rawRollDeg = fusedRoll;
   rawPitchDeg = fusedPitch;
 
-  float centeredRoll = (rawRollDeg - neutralRoll) * ROLL_SIGN;
+  float centeredRoll  = (rawRollDeg  - neutralRoll)  * ROLL_SIGN;
   float centeredPitch = (rawPitchDeg - neutralPitch) * PITCH_SIGN;
 
-  centeredRoll = applyDeadZone(centeredRoll, DEAD_ZONE_DEG);
+  centeredRoll  = applyDeadZone(centeredRoll, DEAD_ZONE_DEG);
   centeredPitch = applyDeadZone(centeredPitch, DEAD_ZONE_DEG);
 
-  smoothRoll += (centeredRoll - smoothRoll) * OUTPUT_SMOOTH_ALPHA;
+  smoothRoll  += (centeredRoll  - smoothRoll)  * OUTPUT_SMOOTH_ALPHA;
   smoothPitch += (centeredPitch - smoothPitch) * OUTPUT_SMOOTH_ALPHA;
 
   if (millis() - lastPrintMs >= PRINT_INTERVAL_MS) {
     lastPrintMs = millis();
     printJSON(smoothPitch, smoothRoll, gx, gy, gz);
+  }
+
+  if (millis() - lastStatusMs >= STATUS_INTERVAL_MS) {
+    lastStatusMs = millis();
+    if (ENABLE_USB_SERIAL) {
+      Serial.printf("[BT] client=%s\n", SerialBT.hasClient() ? "connected" : "waiting");
+    }
   }
 
   delay(2);

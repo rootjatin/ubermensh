@@ -1,0 +1,1 @@
+mic.c -> for the file with alternate mic being turned on and off 
